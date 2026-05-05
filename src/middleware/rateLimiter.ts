@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { Request } from 'express';
 import { RateLimitError } from '../types/errors';
 
@@ -19,7 +19,7 @@ export const ipRateLimiter = rateLimit({
 });
 
 const apiKeyKeyGenerator = (req: Request): string => {
-  return req.apiKey?.key_id ?? `ip:${req.ip ?? 'unknown'}`;
+  return req.apiKey?.key_id ?? `ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
 };
 
 // Sustained limit: 300 requests per minute per API key
