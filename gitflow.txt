@@ -1,0 +1,29 @@
+# branches: dev, testing, staging, production
+
+branch strucure:-
+
+dev: This branch is used for active development and integration of new features. Developers will create feature branches off of dev to work on specific tasks or features. Once a feature is complete and tested, it will be merged back into the dev branch.
+
+testing: This branch is used for testing and quality assurance. Once features are merged into the dev branch, they will be deployed to the testing branch for further testing and validation. This allows the team to identify and fix any issues before moving to the staging environment.
+
+staging: This branch is used for final testing and preparation for production deployment. Features that have passed testing will be merged into the staging branch, where they will undergo final validation before being deployed to the production environment.
+
+production: This branch is the live environment where the stable and tested code is deployed for end-users. Only thoroughly tested and approved features will be merged into the production branch to ensure stability and reliability for users.
+
+feature branches: These are temporary branches created off of the dev branch for specific features or tasks. They allow developers to work on new features without affecting the main development branch. Once a feature is complete, it will be merged back into the dev branch for integration and testing.
+
+Feature branches should be named descriptively to indicate the purpose of the branch, such as "feature/login-page" or "feature/payment-integration". This helps in organizing and managing the development process effectively.
+
+example: feature/login-page, where "login-page" describes the purpose of the branch. This naming convention helps in organizing and managing the development process effectively, making it easier for team members to understand the purpose of each branch at a glance.
+
+OR 
+Recommeneded:
+Feature branches are created off of the dev branch and are used to develop specific features or tasks. They allow developers to work on new features without affecting the main development branch. Once a feature is complete, it will be merged back into the dev branch for integration and testing.
+
+example: feature/HASH-1234-login-page, where "HASH-1234" is the identifier for the task or feature being developed, and "login-page" describes the purpose of the branch. This naming convention helps in organizing and managing the development process effectively, making it easier for team members to understand the purpose of each branch at a glance.
+
+
+Merge will only happen from dev to testing, then to staging, and finally to production. This ensures a controlled and systematic approach to deploying new features and updates, allowing for thorough testing and validation at each stage before reaching the end-users.
+
+Merge will only happen via pull requests, which allows for code review and collaboration among team members. This process helps to maintain code quality and ensures that all changes are properly reviewed and approved before being merged into the main branches. Pull requests also provide a platform for discussion and feedback, allowing developers to address any concerns or suggestions before finalizing the merge.
+

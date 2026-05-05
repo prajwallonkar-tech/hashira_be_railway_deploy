@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# environment files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code — local-only files
+.claude/settings.local.json
+
+# Full planning docs — keep locally, never push to repo
+planning/trd.md
+planning/lld.md
+planning/Hashira PRD.pdf
+
+# test coverage
+coverage/

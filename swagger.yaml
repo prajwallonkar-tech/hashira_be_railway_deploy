@@ -1,0 +1,1241 @@
+openapi: 3.0.0
+info:
+  title: Hashira API
+  version: 1.0.0
+  description: Cryptographically verifiable AI audit record API
+servers:
+  - url: /v1
+    description: Hashira v1
+components:
+  schemas:
+    SuccessEnvelope:
+      description: >
+        Wrapper present on every successful (2xx) response.
+        `success` is always `true`. `statusCode` mirrors the HTTP status.
+        `data` contains the endpoint-specific payload.
+      type: object
+      required:
+        - success
+        - statusCode
+        - data
+      properties:
+        success:
+          type: boolean
+          example: true
+        statusCode:
+          type: integer
+          example: 200
+        data:
+          type: object
+          description: Endpoint-specific payload — see each response schema below
+    ErrorResponse:
+      description: >
+        Wrapper present on every error (4xx / 5xx) response.
+        `success` is always `false`. `statusCode` mirrors the HTTP status.
+        `message` is a human-readable description of the error.
+      type: object
+      required:
+        - success
+        - statusCode
+        - message
+      properties:
+        success:
+          type: boolean
+          example: false
+        statusCode:
+          type: integer
+          example: 400
+        message:
+          type: string
+          example: Invalid email format
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: hashira_session
+    refreshCookieAuth:
+      type: apiKey
+      in: cookie
+      name: hashira_refresh
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /auth/session:
+    post:
+      tags:
+        - Auth
+      summary: Step 1 of login (email + password)
+      description: >
+        Validates credentials. Always runs bcrypt.compare to prevent timing
+        attacks. On success, generates a 6-digit OTP, stores its SHA-256 hash in
+        otp_tokens, and dispatches the OTP via AWS SES.
+        Returns `{ status: "otp_required" }` — no cookie is issued yet.
+        The 401 response is intentionally identical whether the email is unknown
+        or the password is wrong, preventing user enumeration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  minLength: 8
+                  example: mysecretpassword
+      responses:
+        '200':
+          description: OTP dispatched — proceed to POST /v1/auth/otp/verify
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            example: otp_required
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  status: otp_required
+        '400':
+          description: Validation error (missing or invalid email / password)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Invalid email format
+        '401':
+          description: >-
+            Invalid credentials (intentionally ambiguous — same response for
+            unknown email and wrong password to prevent enumeration)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Invalid credentials
+        '429':
+          description: >-
+            Rate limit exceeded — IP (20 req/min) or email-based (10 failed
+            attempts per 5 min). Check the Retry-After header for when to retry.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the client may retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many failed login attempts. Try again later.
+  /auth/otp/verify:
+    post:
+      tags:
+        - Auth
+      summary: Step 2 of login — verify OTP
+      description: >
+        Validates the 6-digit OTP sent in step 1. SHA-256 hashes the incoming
+        OTP and compares against the stored hash using a timing-safe comparison.
+        Checks expiry (10 min), single-use flag, and attempt limit (max 5).
+
+        **On success:**
+        - If the user has TOTP/MFA enabled: returns `{ status: "mfa_required" }` — no cookies yet.
+        - Otherwise: issues `hashira_session` (24 h JWT) and `hashira_refresh`
+          (7-day rotating) as httpOnly cookies, and returns user identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - otp
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                otp:
+                  type: string
+                  pattern: '^\d{6}$'
+                  example: '482931'
+      responses:
+        '200':
+          description: >
+            Two possible payloads — inspect `data.status`:
+
+            - `data.status === "mfa_required"` → user has TOTP enabled, proceed to POST /v1/auth/mfa/verify (no cookies set)
+            - No `data.status` field → fully authenticated, cookies are set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - title: Authenticated
+                            type: object
+                            properties:
+                              user_id:
+                                type: string
+                                format: uuid
+                              email:
+                                type: string
+                                format: email
+                              role:
+                                type: string
+                                enum: [member, admin, super_admin]
+                          - title: MFA required
+                            type: object
+                            properties:
+                              status:
+                                type: string
+                                example: mfa_required
+              examples:
+                authenticated:
+                  summary: Fully authenticated
+                  value:
+                    success: true
+                    statusCode: 200
+                    data:
+                      user_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                      email: user@example.com
+                      role: member
+                mfa_required:
+                  summary: MFA step required
+                  value:
+                    success: true
+                    statusCode: 200
+                    data:
+                      status: mfa_required
+        '400':
+          description: Validation error (invalid email or OTP format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: OTP must be exactly 6 digits
+        '401':
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Invalid or expired OTP
+        '403':
+          description: Organisation is suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 403
+                message: Organisation is suspended
+        '429':
+          description: OTP attempt limit exceeded (5 failed attempts) or IP rate limit
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the client may retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many OTP attempts. Try again later.
+  /auth/otp/resend:
+    post:
+      tags:
+        - Auth
+      summary: Resend OTP code
+      description: >
+        Generates and sends a fresh 6-digit OTP to the given email address.
+        Always returns 200 — silently no-ops if no pending session exists to
+        prevent email enumeration. Only sends an email if a non-expired, unused
+        OTP token exists for this address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        '200':
+          description: OTP sent (or silently no-op if no pending session exists)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            example: otp_sent
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  status: otp_sent
+        '400':
+          description: Validation error (invalid email format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Invalid email format
+        '429':
+          description: IP rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many requests from this IP
+  /auth/google:
+    post:
+      tags:
+        - Auth
+      summary: Google OAuth SSO login (single-step, no OTP)
+      description: >
+        Verifies a Google ID token (RS256 via JWKS). Requires `email_verified=true`.
+        Looks up user by `google_sub`; falls back to email lookup for invited users
+        on their first Google login and links the `google_sub`.
+        Issues `hashira_session` (24 h JWT) and `hashira_refresh` (7-day rotating)
+        httpOnly cookies on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - google_id_token
+              properties:
+                google_id_token:
+                  type: string
+                  description: Google ID token obtained from the client-side Google OAuth flow
+      responses:
+        '200':
+          description: Authenticated — hashira_session and hashira_refresh cookies set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user_id:
+                            type: string
+                            format: uuid
+                          email:
+                            type: string
+                            format: email
+                          role:
+                            type: string
+                            enum: [member, admin, super_admin]
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  user_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                  email: user@example.com
+                  role: member
+        '400':
+          description: Validation error (missing google_id_token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Google ID token is required
+        '401':
+          description: Invalid or expired Google ID token, or email_verified=false
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Unauthorized
+        '403':
+          description: >-
+            User not found (no invitation exists for this Google account) or
+            organisation is suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                no_invitation:
+                  summary: No invitation found
+                  value:
+                    success: false
+                    statusCode: 403
+                    message: No invitation found for this account
+                org_suspended:
+                  summary: Organisation suspended
+                  value:
+                    success: false
+                    statusCode: 403
+                    message: Organisation is suspended
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Rotate session — issue new cookies
+      description: >
+        Reads the `hashira_refresh` httpOnly cookie, hashes it with SHA-256, and
+        looks up the token in `refresh_tokens`. Rejects if the token is missing,
+        expired, or already used (replay protection). On success: atomically marks
+        the old token `used=true` and inserts a new refresh token row, then issues
+        fresh `hashira_session` (24 h) and `hashira_refresh` (7-day) cookies.
+        Call this when a request returns 401 due to an expired session JWT.
+      security:
+        - refreshCookieAuth: []
+      responses:
+        '200':
+          description: Tokens rotated — fresh cookies set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          refreshed:
+                            type: boolean
+                            example: true
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  refreshed: true
+        '401':
+          description: hashira_refresh cookie missing, expired, or already used
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Refresh token is missing, expired, or already used
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout — invalidate session
+      description: >
+        Clears both `hashira_session` and `hashira_refresh` httpOnly cookies
+        (Max-Age=0) and marks the refresh token as used in the database so it
+        cannot be replayed.
+        Returns 204 No Content. Exempt from the ORG_SUSPENDED guard — suspended
+        users can always log out.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Session cleared — both cookies invalidated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            example: logout successful
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  status: logout successful
+        '401':
+          description: No valid session cookie present
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Unauthorized
+  /auth/password-reset/request:
+    post:
+      tags:
+        - Auth
+      summary: Request a password reset OTP
+      description: >
+        Always returns 204 immediately after Zod validation — prevents
+        timing-based email enumeration. Asynchronously (fire-and-forget): looks
+        up user by email, skips silently if not found or if it is a Google-only
+        account. For valid email+password accounts: generates a 6-digit OTP,
+        stores SHA-256(email+otp) in password_reset_tokens (10-min expiry), and
+        sends the OTP via AWS SES.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        '204':
+          description: Request accepted — email existence is not revealed
+        '400':
+          description: Validation error (invalid email format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Invalid email format
+        '429':
+          description: IP rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many requests from this IP
+  /auth/password-reset/confirm:
+    post:
+      tags:
+        - Auth
+      summary: Confirm password reset with OTP
+      description: >
+        Validates the 6-digit OTP sent to the email. Computes SHA-256(email+otp)
+        and looks up a matching password_reset_token (used=false, not expired).
+        On match: bcrypt-hashes (rounds=12) the new password and atomically
+        updates `users.password_hash` + marks the token used. Rate limited to
+        5 failed attempts per email per 5 minutes. Google-only accounts (no
+        password_hash) return 403.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - otp
+                - new_password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                otp:
+                  type: string
+                  pattern: '^\d{6}$'
+                  example: '482931'
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        '204':
+          description: Password updated successfully — no response body
+        '400':
+          description: Validation error (missing fields, invalid format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: New password must be at least 8 characters
+        '403':
+          description: Account does not support password reset (Google-only account)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 403
+                message: This account uses Google Sign-In and does not have a password
+        '410':
+          description: OTP not found, already used, or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 410
+                message: OTP has expired or already been used
+        '429':
+          description: Too many failed attempts (5/5 min per email) or IP rate limit
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many failed attempts. Try again later.
+  # MFA endpoints removed — kept in codebase for future re-enablement
+  /organisations:
+    post:
+      tags:
+        - Organisations
+      summary: Create a new organisation
+      description: >
+        Public endpoint. Creates an organisation (status: `payment_pending`) and
+        its admin user in a single atomic transaction, then creates a Stripe
+        Checkout session. Issues httpOnly JWT session and refresh cookies on
+        success so the client can poll `GET /v1/me` while the user completes
+        payment. Supports two mutually exclusive auth paths: email+password or
+        Google SSO (`google_id_token`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - title: Email + password
+                  type: object
+                  required:
+                    - org_name
+                    - admin_email
+                    - password
+                  properties:
+                    org_name:
+                      type: string
+                      minLength: 2
+                      maxLength: 100
+                      example: Acme Corp
+                    admin_email:
+                      type: string
+                      format: email
+                      example: alice@acme.com
+                    password:
+                      type: string
+                      minLength: 8
+                - title: Google SSO
+                  type: object
+                  required:
+                    - org_name
+                    - google_id_token
+                  properties:
+                    org_name:
+                      type: string
+                      minLength: 2
+                      maxLength: 100
+                      example: Acme Corp
+                    google_id_token:
+                      type: string
+                      description: Google ID token from the client-side OAuth flow
+      responses:
+        '201':
+          description: >
+            Organisation created — session cookies set. Redirect the user to
+            `stripe_checkout_url` to complete payment. Poll `GET /v1/me` until
+            `org_status` transitions from `payment_pending` to `active`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      statusCode:
+                        example: 201
+                      data:
+                        type: object
+                        properties:
+                          org_id:
+                            type: string
+                            format: uuid
+                          org_name:
+                            type: string
+                            example: Acme Corp
+                          status:
+                            type: string
+                            example: payment_pending
+                          stripe_checkout_url:
+                            type: string
+                            example: 'https://checkout.stripe.com/pay/cs_live_a1b2c3'
+                          created_at:
+                            type: string
+                            format: date-time
+              example:
+                success: true
+                statusCode: 201
+                data:
+                  org_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                  org_name: Acme Corp
+                  status: payment_pending
+                  stripe_checkout_url: 'https://checkout.stripe.com/pay/cs_live_a1b2c3'
+                  created_at: '2026-04-23T10:00:00.000Z'
+        '400':
+          description: Validation error (missing fields, invalid email, name too short/long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Organisation name must be at least 2 characters
+        '401':
+          description: Invalid or expired Google ID token (Google path only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Unauthorized
+        '409':
+          description: org_name or admin_email is already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 409
+                message: An account with this email already exists
+        '429':
+          description: IP rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: Too many requests from this IP
+  /me:
+    get:
+      tags:
+        - Auth
+      summary: Get current session user and org status
+      description: >
+        Returns the authenticated user's identity, role, and organisation status.
+        Call on app mount to initialise role-based routing. Also poll every few
+        seconds during the Stripe payment flow until `org_status` transitions from
+        `payment_pending` to `active`. Exempt from the ORG_SUSPENDED guard —
+        this endpoint always works regardless of org status.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Authenticated user resolved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user_id:
+                            type: string
+                            format: uuid
+                          org_id:
+                            type: string
+                            format: uuid
+                            nullable: true
+                          email:
+                            type: string
+                            format: email
+                          role:
+                            type: string
+                            enum: [member, admin, super_admin]
+                          org_name:
+                            type: string
+                            nullable: true
+                          org_status:
+                            type: string
+                            enum: [payment_pending, active, suspended]
+                            nullable: true
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  user_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                  org_id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                  email: user@example.com
+                  role: admin
+                  org_name: Acme Corp
+                  org_status: active
+        '401':
+          description: No valid session cookie, or JWT expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 401
+                message: Unauthorized
+  /invitations/validate:
+    get:
+      tags:
+        - Invitations
+      summary: Validate an invitation token
+      description: >
+        Validates the invitation token from an invite URL. Returns org name, role,
+        and expiry so the frontend can pre-fill the signup form before the user
+        registers. The token is SHA-256 hashed and looked up in the invitations
+        table. Returns 410 Gone if not found, already used, or expired.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Plaintext invitation token from the invite URL
+          example: abc123xyz
+      responses:
+        '200':
+          description: Valid invitation — token is active and not expired
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          org_name:
+                            type: string
+                            nullable: true
+                            example: Acme Corp
+                          role:
+                            type: string
+                            enum: [member, admin]
+                            example: member
+                          expires_at:
+                            type: string
+                            format: date-time
+              example:
+                success: true
+                statusCode: 200
+                data:
+                  org_name: Acme Corp
+                  role: member
+                  expires_at: '2026-04-30T10:00:00.000Z'
+        '400':
+          description: token query parameter is missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Invitation token is required
+        '410':
+          description: Invitation not found, already used, or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 410
+                message: This invitation is invalid or has expired
+  /events:
+    post:
+      tags:
+        - Events
+      summary: Ingest an AI event for audit logging and blockchain anchoring
+      description: >
+        Synchronous entry point to the event pipeline. Authenticates via
+        `X-API-Key` (SHA-256 hash compared in constant time against
+        `api_keys.key_hash`; org must be `active`). On success, persists the
+        event with `status: processing` and returns `202 Accepted` immediately —
+        canonicalisation, hashing, and blockchain anchoring run asynchronously
+        in later pipeline stages.
+
+        **Idempotency:** include an `X-Idempotency-Key` header to make retries
+        safe. If a prior event with the same `(org_id, idempotency_key)` exists,
+        the original `event_id` is returned with `idempotent_replay: true` and
+        no new event is created.
+
+        **Rate limits (per API key):** 50 req/sec burst, 300 req/min sustained.
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - name: X-Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+          description: >
+            Optional client-supplied idempotency key. Replays return the
+            original event_id without creating a duplicate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - prompt
+                - output
+                - model_id
+                - timestamp
+              properties:
+                prompt:
+                  type: string
+                  minLength: 1
+                  maxLength: 100000
+                  description: The full AI prompt as submitted to the model
+                  example: What is the capital of France?
+                output:
+                  type: string
+                  minLength: 1
+                  maxLength: 100000
+                  description: The full AI output returned by the model
+                  example: The capital of France is Paris.
+                model_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Identifier of the AI model that produced the output
+                  example: gpt-4o
+                timestamp:
+                  type: string
+                  format: date-time
+                  description: >
+                    ISO 8601 timestamp of when the AI interaction occurred
+                    (must include offset, e.g. `Z` or `+00:00`)
+                  example: '2026-04-28T10:00:00.000Z'
+                workflow_id:
+                  type: string
+                  maxLength: 200
+                  description: Optional caller-defined workflow identifier
+                  example: invoice-classifier-v2
+                metadata:
+                  type: object
+                  additionalProperties: true
+                  description: Optional arbitrary JSON metadata
+                  example:
+                    tenant: north-america
+                    operator_id: u-42
+      responses:
+        '202':
+          description: >
+            Event accepted for processing. The event is persisted with
+            `status: processing`. Canonicalisation, hashing, and blockchain
+            anchoring happen asynchronously — poll `GET /v1/events/:id` (future
+            endpoint) to observe status transition to `anchoring` then
+            `anchored`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      statusCode:
+                        example: 202
+                      data:
+                        type: object
+                        properties:
+                          event_id:
+                            type: string
+                            format: uuid
+                          status:
+                            type: string
+                            enum: [processing, anchoring, anchored, anchor_failed]
+                            example: processing
+                          received_at:
+                            type: string
+                            format: date-time
+                          idempotent_replay:
+                            type: boolean
+                            description: >
+                              True if this response replays a prior event
+                              matched by X-Idempotency-Key
+              examples:
+                accepted:
+                  summary: New event accepted
+                  value:
+                    success: true
+                    statusCode: 202
+                    data:
+                      event_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                      status: processing
+                      received_at: '2026-04-28T10:00:00.000Z'
+                      idempotent_replay: false
+                idempotent_replay:
+                  summary: Replay of an earlier idempotent submission
+                  value:
+                    success: true
+                    statusCode: 202
+                    data:
+                      event_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                      status: processing
+                      received_at: '2026-04-28T10:00:00.000Z'
+                      idempotent_replay: true
+        '400':
+          description: >
+            Validation error (missing or invalid field, payload too large,
+            invalid timestamp, idempotency key too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 400
+                message: Request validation failed
+        '401':
+          description: X-API-Key header missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_key:
+                  summary: Header not provided
+                  value:
+                    success: false
+                    statusCode: 401
+                    message: API key required
+                invalid_key:
+                  summary: Key not recognised or revoked
+                  value:
+                    success: false
+                    statusCode: 401
+                    message: Invalid API key
+        '403':
+          description: Organisation suspended or not yet active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                suspended:
+                  summary: Org suspended by Hashira super admin
+                  value:
+                    success: false
+                    statusCode: 403
+                    message: Organisation is suspended
+                not_active:
+                  summary: Org pending payment
+                  value:
+                    success: false
+                    statusCode: 403
+                    message: Organisation is not active
+        '429':
+          description: >
+            Rate limit exceeded — burst (50/sec) or sustained (300/min) limit
+            tripped for this API key
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the client may retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                statusCode: 429
+                message: API key rate limit exceeded (300/min)
+  /health/queue:
+    servers:
+      - url: /
+        description: Health endpoints (not versioned — no /v1 prefix)
+    get:
+      tags:
+        - Health
+      summary: Queue depth and worker status
+      description: >
+        Returns current BullMQ anchor queue job counts. Use during a demo to
+        observe jobs moving from `waiting → active → completed` in real time as
+        events are submitted and anchored. No authentication required.
+      responses:
+        '200':
+          description: Queue is available — job counts returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  queue:
+                    type: object
+                    properties:
+                      waiting:
+                        type: integer
+                        description: Jobs queued but not yet picked up by a worker
+                        example: 0
+                      active:
+                        type: integer
+                        description: Jobs currently being processed (blockchain tx in flight)
+                        example: 1
+                      completed:
+                        type: integer
+                        description: Jobs that finished successfully
+                        example: 3
+                      failed:
+                        type: integer
+                        description: Jobs that exhausted all retries
+                        example: 0
+                      delayed:
+                        type: integer
+                        description: Jobs waiting for a retry back-off delay
+                        example: 0
+              examples:
+                idle:
+                  summary: Queue idle — no jobs in flight
+                  value:
+                    status: ok
+                    queue:
+                      waiting: 0
+                      active: 0
+                      completed: 3
+                      failed: 0
+                      delayed: 0
+                anchoring_in_progress:
+                  summary: One job actively anchoring to blockchain
+                  value:
+                    status: ok
+                    queue:
+                      waiting: 0
+                      active: 1
+                      completed: 3
+                      failed: 0
+                      delayed: 0
+                retry_delayed:
+                  summary: Job in back-off after a transient RPC failure
+                  value:
+                    status: ok
+                    queue:
+                      waiting: 0
+                      active: 0
+                      completed: 3
+                      failed: 0
+                      delayed: 1
+        '503':
+          description: Queue not yet initialised (server still starting up)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: unavailable
+              example:
+                status: unavailable
+tags:
+  - name: Auth
+    description: Authentication, session management, and user identity
+  - name: Organisations
+    description: Organisation creation and management
+  - name: Invitations
+    description: Invitation token validation and acceptance
+  - name: Events
+    description: AI event ingestion and audit log retrieval
+  - name: Health
+    description: Service health and queue observability
