@@ -54,8 +54,8 @@ export class GoneError extends AppError {
 }
 
 export class UnprocessableError extends AppError {
-  constructor(message: string, code = 'UNPROCESSABLE') {
-    super(message, 422, code);
+  constructor(message: string, code = 'UNPROCESSABLE', details?: unknown[]) {
+    super(message, 422, code, details);
   }
 }
 

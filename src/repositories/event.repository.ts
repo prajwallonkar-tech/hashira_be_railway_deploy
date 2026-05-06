@@ -108,3 +108,59 @@ export async function createEvent(input: CreateEventInput): Promise<Event> {
   });
   return repo.save(event);
 }
+
+export interface ListEventsInput {
+  org_id: string;
+  page: number;
+  page_size: number;
+  sort: 'asc' | 'desc';
+  status?: EventStatus;
+  from?: Date;
+  to?: Date;
+  workflow_id?: string;
+}
+
+export interface ListEventsResult {
+  events: Event[];
+  total: number;
+}
+
+export async function listEvents(
+  input: ListEventsInput,
+): Promise<ListEventsResult> {
+  const repo = AppDataSource.getRepository(Event);
+  const qb = repo
+    .createQueryBuilder('event')
+    .where('event.org_id = :org_id', { org_id: input.org_id });
+
+  if (input.status) {
+    qb.andWhere('event.status = :status', { status: input.status });
+  }
+  if (input.from) {
+    qb.andWhere('event.created_at >= :from', { from: input.from });
+  }
+  if (input.to) {
+    qb.andWhere('event.created_at <= :to', { to: input.to });
+  }
+  if (input.workflow_id) {
+    qb.andWhere('event.workflow_id = :workflow_id', {
+      workflow_id: input.workflow_id,
+    });
+  }
+
+  qb.orderBy('event.created_at', input.sort === 'asc' ? 'ASC' : 'DESC')
+    .skip((input.page - 1) * input.page_size)
+    .take(input.page_size);
+
+  const [events, total] = await qb.getManyAndCount();
+  return { events, total };
+}
+
+export async function findEventById(
+  eventId: string,
+  orgId: string,
+): Promise<Event | null> {
+  return AppDataSource.getRepository(Event).findOne({
+    where: { event_id: eventId, org_id: orgId },
+  });
+}

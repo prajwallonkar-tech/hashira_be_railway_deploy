@@ -114,3 +114,87 @@ describe('POST /v1/events — permission enforcement', () => {
     );
   });
 });
+
+jest.mock('../../services/event/event-query.service', () => ({
+  eventQueryService: {
+    list: jest.fn().mockResolvedValue({
+      data: [],
+      pagination: { page: 1, page_size: 20, total: 0, has_next: false },
+    }),
+    getById: jest
+      .fn()
+      .mockResolvedValue({ event_id: 'evt-1', status: 'anchored' }),
+    getVerification: jest.fn().mockResolvedValue({
+      event_id: 'evt-1',
+      canonical_hash: 'abc',
+      tx_hash: '0xdeadbeef',
+      block_number: '100',
+      chain_id: 84532,
+      chain_name: 'Base Sepolia',
+      chain_explorer_url: 'https://sepolia.basescan.org/tx/0xdeadbeef',
+      anchored_at: new Date(),
+      verification_status: 'anchored',
+    }),
+  },
+}));
+
+describe('GET /v1/events — permission enforcement', () => {
+  it('returns 200 when the API key has events:read', async () => {
+    await request(buildApp(['events:read']))
+      .get('/v1/events')
+      .expect(200);
+  });
+
+  it('returns 403 INSUFFICIENT_PERMISSIONS when key has only events:write', async () => {
+    const res = await request(buildApp(['events:write']))
+      .get('/v1/events')
+      .expect(403);
+    expect((res.body as { code: string }).code).toBe(
+      'INSUFFICIENT_PERMISSIONS',
+    );
+  });
+
+  it('returns 403 INSUFFICIENT_PERMISSIONS when key has no permissions', async () => {
+    await request(buildApp([])).get('/v1/events').expect(403);
+  });
+});
+
+describe('GET /v1/events/:event_id — permission enforcement', () => {
+  it('returns 200 when the API key has events:read', async () => {
+    await request(buildApp(['events:read']))
+      .get('/v1/events/evt-1')
+      .expect(200);
+  });
+
+  it('returns 403 INSUFFICIENT_PERMISSIONS when key has only events:write', async () => {
+    const res = await request(buildApp(['events:write']))
+      .get('/v1/events/evt-1')
+      .expect(403);
+    expect((res.body as { code: string }).code).toBe(
+      'INSUFFICIENT_PERMISSIONS',
+    );
+  });
+});
+
+describe('GET /v1/events/:event_id/verification — permission enforcement', () => {
+  it('returns 200 when the API key has verification:read', async () => {
+    await request(buildApp(['verification:read']))
+      .get('/v1/events/evt-1/verification')
+      .expect(200);
+  });
+
+  it('returns 403 INSUFFICIENT_PERMISSIONS when key has events:read but not verification:read', async () => {
+    const res = await request(buildApp(['events:read']))
+      .get('/v1/events/evt-1/verification')
+      .expect(403);
+    expect((res.body as { code: string }).code).toBe(
+      'INSUFFICIENT_PERMISSIONS',
+    );
+  });
+
+  it('returns 403 INSUFFICIENT_PERMISSIONS when key has no permissions', async () => {
+    await request(buildApp([]))
+      .get('/v1/events/evt-1/verification')
+      .expect(403);
+  });
+});
