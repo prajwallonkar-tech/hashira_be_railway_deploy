@@ -34,6 +34,8 @@ const DEV_ORIGINS = [
   'http://localhost:5173',
   'tauri://localhost',
   'https://tauri.localhost',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
 ];
 const allowedOrigins = process.env.FRONTEND_URL
   ? [process.env.FRONTEND_URL]
