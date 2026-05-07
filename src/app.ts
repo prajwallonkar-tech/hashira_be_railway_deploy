@@ -32,14 +32,18 @@ const DEV_ORIGINS = [
   'http://localhost:3001',
   'http://localhost:3002',
   'http://localhost:5173',
+];
+const TAURI_ORIGINS = [
   'tauri://localhost',
   'https://tauri.localhost',
-  'https://tauri.localhost',
   'http://tauri.localhost',
+  'http://127.0.0.1:1430',
+  'http://127.0.0.1:1430'
 ];
-const allowedOrigins = process.env.FRONTEND_URL
-  ? [process.env.FRONTEND_URL]
-  : DEV_ORIGINS;
+const allowedOrigins = [
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : DEV_ORIGINS),
+  ...TAURI_ORIGINS,
+];
 
 app.use(
   cors({
