@@ -37,7 +37,6 @@ const TAURI_ORIGINS = [
   'tauri://localhost',
   'https://tauri.localhost',
   'http://tauri.localhost',
-  'http://127.0.0.1:1430',
   'http://127.0.0.1:1430'
 ];
 const allowedOrigins = [
@@ -45,14 +44,9 @@ const allowedOrigins = [
   ...TAURI_ORIGINS,
 ];
 
-app.use((req, res, next) => {
-  console.log('[CORS]', req.method, req.path, 'Origin:', req.headers.origin);
-  next();
-});
-
 app.use(
   cors({
-    origin: true,
+    origin: allowedOrigins,
     credentials: true,
   }),
 );
