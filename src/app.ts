@@ -45,9 +45,14 @@ const allowedOrigins = [
   ...TAURI_ORIGINS,
 ];
 
+app.use((req, res, next) => {
+  console.log('[CORS]', req.method, req.path, 'Origin:', req.headers.origin);
+  next();
+});
+
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: true,
     credentials: true,
   }),
 );
