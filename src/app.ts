@@ -37,7 +37,6 @@ const TAURI_ORIGINS = [
   'tauri://localhost',
   'https://tauri.localhost',
   'http://tauri.localhost',
-  'http://127.0.0.1:1430',
   'http://127.0.0.1:1430'
 ];
 const allowedOrigins = [
