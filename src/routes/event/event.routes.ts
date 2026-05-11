@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { validateApiKey } from '../../middleware/validateApiKey';
 import { validateApiKeyPermission } from '../../middleware/validateApiKeyPermission';
+import { authenticateFlexible } from '../../middleware/authenticateFlexible';
 import { validateBody } from '../../middleware/validateBody';
 import {
   apiKeyBurstLimiter,
@@ -17,7 +18,7 @@ import { ApiKeyPermission } from '../../types/enums';
 
 export const eventRouter = Router();
 
-// POST /v1/events
+// POST /v1/events — API key only (SDK ingestion path)
 eventRouter.post(
   '/',
   validateApiKey,
@@ -28,21 +29,19 @@ eventRouter.post(
   createEvent,
 );
 
-// GET /v1/events
+// GET /v1/events — JWT cookie (dashboard) OR API key (SDK)
 eventRouter.get(
   '/',
-  validateApiKey,
-  validateApiKeyPermission(ApiKeyPermission.EVENTS_READ),
+  authenticateFlexible,
   apiKeyBurstLimiter,
   apiKeySustainedLimiter,
   listEvents,
 );
 
-// GET /v1/events/:event_id/verification  (must be before /:event_id to avoid route shadowing)
+// GET /v1/events/:event_id/verification (must be before /:event_id)
 eventRouter.get(
   '/:event_id/verification',
-  validateApiKey,
-  validateApiKeyPermission(ApiKeyPermission.VERIFICATION_READ),
+  authenticateFlexible,
   apiKeyBurstLimiter,
   apiKeySustainedLimiter,
   getVerification,
@@ -51,8 +50,7 @@ eventRouter.get(
 // GET /v1/events/:event_id
 eventRouter.get(
   '/:event_id',
-  validateApiKey,
-  validateApiKeyPermission(ApiKeyPermission.EVENTS_READ),
+  authenticateFlexible,
   apiKeyBurstLimiter,
   apiKeySustainedLimiter,
   getEvent,

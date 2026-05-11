@@ -3,7 +3,9 @@ import { jwtVerify, createRemoteJWKSet } from 'jose';
 import {
   findOrgByName,
   createOrgWithAdmin,
+  activateOrgById,
 } from '../../repositories/organisation.repository';
+import { logger } from '../../logger';
 import { findUserByEmail } from '../../repositories/user.repository';
 import { insertRefreshToken } from '../../repositories/refresh-token.repository';
 import { stripe } from '../../utils/stripe.client';
@@ -79,6 +81,27 @@ export class OrganisationService {
       passwordHash,
       googleSub,
     });
+
+    // Auto-activate after 5 seconds in non-production environments —
+    // simulates the Stripe webhook flipping payment_pending → active.
+    // In production the real webhook handles activation.
+    if (process.env.NODE_ENV !== 'production') {
+      setTimeout(() => {
+        activateOrgById(org.org_id)
+          .then(() => {
+            logger.info(
+              { org_id: org.org_id },
+              'org auto-activated after 5s (dev mode)',
+            );
+          })
+          .catch((err: unknown) => {
+            logger.error(
+              { err, org_id: org.org_id },
+              'org auto-activation failed',
+            );
+          });
+      }, 5000).unref();
+    }
 
     const frontendUrl = env.FRONTEND_URL ?? 'http://localhost:5173';
     let stripeCheckoutUrl: string;

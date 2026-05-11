@@ -1,0 +1,6 @@
+[build]
+buildCommand = "npm run build"
+
+[deploy]
+releaseCommand = "npm run seed:demo"
+startCommand = "npm run start"

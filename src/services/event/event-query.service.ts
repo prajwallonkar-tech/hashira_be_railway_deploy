@@ -3,6 +3,10 @@ import {
   findEventById,
   ListEventsInput,
 } from '../../repositories/event.repository';
+import {
+  findUsersByIds,
+  findUserByIdAndOrg,
+} from '../../repositories/user.repository';
 import { decrypt } from '../../utils/encryption';
 import { EventStatus } from '../../types/enums';
 import { NotFoundError, UnprocessableError } from '../../types/errors';
@@ -25,22 +29,43 @@ function chainMeta(chainId: number): {
   );
 }
 
+export type PublicEventStatus =
+  | 'processing'
+  | 'anchoring'
+  | 'anchored'
+  | 'failed';
+
+const INTERNAL_TO_PUBLIC_STATUS: Record<EventStatus, PublicEventStatus> = {
+  [EventStatus.PROCESSING]: 'processing',
+  [EventStatus.ANCHORING]: 'anchoring',
+  [EventStatus.ANCHORED]: 'anchored',
+  [EventStatus.ANCHOR_FAILED]: 'failed',
+};
+
+function toPublicStatus(s: EventStatus): PublicEventStatus {
+  return INTERNAL_TO_PUBLIC_STATUS[s];
+}
+
 export interface ListEventsQuery {
   org_id: string;
+  user_id?: string;
   page: number;
   page_size: number;
   sort: 'asc' | 'desc';
-  status?: EventStatus;
+  status?: EventStatus[];
   from?: Date;
   to?: Date;
   workflow_id?: string;
+  model_id?: string;
 }
 
 export interface EventSummary {
   event_id: string;
+  user_id: string | null;
+  email: string | null;
   model_id: string;
   workflow_id: string | null;
-  status: EventStatus;
+  status: PublicEventStatus;
   canonical_hash: string | null;
   tx_hash: string | null;
   anchored_at: Date | null;
@@ -51,6 +76,7 @@ export interface EventDetail {
   event_id: string;
   org_id: string;
   user_id: string | null;
+  email: string | null;
   prompt: string;
   output: string;
   model_id: string;
@@ -59,7 +85,7 @@ export interface EventDetail {
   timestamp: Date;
   received_at: Date;
   canonical_hash: string | null;
-  status: EventStatus;
+  status: PublicEventStatus;
   tx_hash: string | null;
   block_number: string | null;
   chain_id: number | null;
@@ -93,6 +119,7 @@ export class EventQueryService {
   async list(query: ListEventsQuery): Promise<ListEventsResult> {
     const input: ListEventsInput = {
       org_id: query.org_id,
+      user_id: query.user_id,
       page: query.page,
       page_size: query.page_size,
       sort: query.sort,
@@ -100,12 +127,23 @@ export class EventQueryService {
       from: query.from,
       to: query.to,
       workflow_id: query.workflow_id,
+      model_id: query.model_id,
     };
 
     const { events, total } = await listEvents(input);
 
+    // Batch-fetch emails for the user_ids on this page so the response can
+    // include each event's owner email alongside the user_id.
+    const userIds = Array.from(
+      new Set(events.map((e) => e.user_id).filter((id): id is string => !!id)),
+    );
+    const users = await findUsersByIds(userIds);
+    const emailById = new Map(users.map((u) => [u.user_id, u.email]));
+
     return {
-      data: events.map((e) => this.toSummary(e)),
+      data: events.map((e) =>
+        this.toSummary(e, emailById.get(e.user_id ?? '')),
+      ),
       pagination: {
         page: query.page,
         page_size: query.page_size,
@@ -115,18 +153,32 @@ export class EventQueryService {
     };
   }
 
-  async getById(eventId: string, orgId: string): Promise<EventDetail> {
+  async getById(
+    eventId: string,
+    orgId: string,
+    userId?: string,
+  ): Promise<EventDetail> {
     const event = await findEventById(eventId, orgId);
     if (!event) throw new NotFoundError('Event not found');
-    return this.toDetail(event);
+    if (userId && event.user_id !== userId) {
+      throw new NotFoundError('Event not found');
+    }
+    const ownerEmail = event.user_id
+      ? ((await findUserByIdAndOrg(event.user_id, orgId))?.email ?? null)
+      : null;
+    return this.toDetail(event, ownerEmail);
   }
 
   async getVerification(
     eventId: string,
     orgId: string,
+    userId?: string,
   ): Promise<VerificationData> {
     const event = await findEventById(eventId, orgId);
     if (!event) throw new NotFoundError('Event not found');
+    if (userId && event.user_id !== userId) {
+      throw new NotFoundError('Event not found');
+    }
 
     if (
       event.status !== EventStatus.ANCHORED ||
@@ -160,12 +212,14 @@ export class EventQueryService {
     };
   }
 
-  private toSummary(e: Event): EventSummary {
+  private toSummary(e: Event, ownerEmail?: string | null): EventSummary {
     return {
       event_id: e.event_id,
+      user_id: e.user_id,
+      email: ownerEmail ?? null,
       model_id: e.model_id,
       workflow_id: e.workflow_id,
-      status: e.status,
+      status: toPublicStatus(e.status),
       canonical_hash: e.canonical_hash,
       tx_hash: e.tx_hash,
       anchored_at: e.anchored_at,
@@ -173,11 +227,12 @@ export class EventQueryService {
     };
   }
 
-  private toDetail(e: Event): EventDetail {
+  private toDetail(e: Event, ownerEmail?: string | null): EventDetail {
     return {
       event_id: e.event_id,
       org_id: e.org_id,
       user_id: e.user_id,
+      email: ownerEmail ?? null,
       prompt: decrypt(e.prompt),
       output: decrypt(e.output),
       model_id: e.model_id,
@@ -186,7 +241,7 @@ export class EventQueryService {
       timestamp: e.timestamp,
       received_at: e.received_at,
       canonical_hash: e.canonical_hash,
-      status: e.status,
+      status: toPublicStatus(e.status),
       tx_hash: e.tx_hash,
       block_number: e.block_number,
       chain_id: e.chain_id,

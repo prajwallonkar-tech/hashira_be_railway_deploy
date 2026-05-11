@@ -23,6 +23,9 @@ export class ApiKey {
   @Column({ type: 'varchar', length: 10 })
   key_prefix!: string;
 
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  name!: string | null;
+
   @Column({
     type: 'enum',
     enum: ApiKeyStatus,

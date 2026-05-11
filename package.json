@@ -21,9 +21,9 @@
     "migration:run": "typeorm migration:run -d src/config/database.ts",
     "migration:revert": "typeorm migration:revert -d src/config/database.ts",
     "swagger:export": "ts-node --transpile-only scripts/export-swagger.ts",
+    "seed:demo": "node dist/scripts/seed-demo-orgs.js",
     "prepare": "husky",
     "seed": "ts-node scripts/seed-test-api-key.ts"
-
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1030.0",
@@ -95,7 +95,9 @@
     ],
     "rootDir": "src",
     "testRegex": ".*\\.test\\.ts$",
-    "testPathIgnorePatterns": ["/__tests__/integration/"],
+    "testPathIgnorePatterns": [
+      "/__tests__/integration/"
+    ],
     "transform": {
       "^.+\\.(t|j)s$": [
         "ts-jest",

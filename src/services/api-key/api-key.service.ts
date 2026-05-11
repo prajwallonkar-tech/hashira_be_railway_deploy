@@ -3,11 +3,20 @@ import {
   findApiKeyByHash,
   touchLastUsed,
   createApiKey as repoCreateApiKey,
+  listApiKeysByOrg,
+  findApiKeyByIdAndOrg,
+  revokeApiKey as repoRevokeApiKey,
 } from '../../repositories/api-key.repository';
 import { findOrgById } from '../../repositories/organisation.repository';
+import { findUserByEmailAndOrg } from '../../repositories/user.repository';
 import { hashSHA256 } from '../../utils/crypto';
-import { AuthError, ForbiddenError } from '../../types/errors';
-import { ApiKeyPermission, OrgStatus } from '../../types/enums';
+import {
+  AuthError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../types/errors';
+import { ApiKeyPermission, ApiKeyStatus, OrgStatus } from '../../types/enums';
 
 export interface ValidatedApiKey {
   key_id: string;
@@ -18,15 +27,28 @@ export interface ValidatedApiKey {
 
 export interface CreateApiKeyInput {
   org_id: string;
+  email?: string;
   permissions?: ApiKeyPermission[];
+  name?: string;
 }
 
 export interface CreatedApiKey {
   key_id: string;
   api_key: string;
   key_prefix: string;
+  name: string | null;
   permissions: ApiKeyPermission[];
   created_at: Date;
+}
+
+export interface ApiKeySummary {
+  key_id: string;
+  key_prefix: string;
+  name: string | null;
+  permissions: ApiKeyPermission[];
+  status: ApiKeyStatus;
+  created_at: Date;
+  last_used_at: Date | null;
 }
 
 export class ApiKeyService {
@@ -76,24 +98,65 @@ export class ApiKeyService {
 
   async createApiKey(input: CreateApiKeyInput): Promise<CreatedApiKey> {
     const permissions = input.permissions ?? [ApiKeyPermission.EVENTS_WRITE];
+
+    let resolvedUserId: string | null = null;
+    if (input.email) {
+      const user = await findUserByEmailAndOrg(input.email, input.org_id);
+      if (!user) {
+        throw new ValidationError(
+          'email does not belong to an active user in this organisation',
+          'INVALID_USER_FOR_ORG',
+          [{ field: 'email', value: input.email }],
+        );
+      }
+      resolvedUserId = user.user_id;
+    }
+
     const plaintextKey = `hsk_${randomBytes(32).toString('base64url')}`;
     const key_hash = hashSHA256(plaintextKey);
     const key_prefix = plaintextKey.slice(0, 8);
 
     const saved = await repoCreateApiKey({
       org_id: input.org_id,
+      user_id: resolvedUserId,
       key_hash,
       key_prefix,
       permissions,
+      name: input.name ?? null,
     });
 
     return {
       key_id: saved.key_id,
       api_key: plaintextKey,
       key_prefix,
+      name: saved.name,
       permissions: saved.permissions,
       created_at: saved.created_at,
     };
+  }
+
+  async listKeys(orgId: string): Promise<ApiKeySummary[]> {
+    const rows = await listApiKeysByOrg(orgId);
+    return rows.map((k) => ({
+      key_id: k.key_id,
+      key_prefix: k.key_prefix,
+      name: k.name,
+      permissions: k.permissions,
+      status: k.status,
+      created_at: k.created_at,
+      last_used_at: k.last_used_at,
+    }));
+  }
+
+  async revokeKey(keyId: string, orgId: string): Promise<void> {
+    const existing = await findApiKeyByIdAndOrg(keyId, orgId);
+    if (!existing) {
+      throw new NotFoundError('API key not found');
+    }
+    if (existing.status === ApiKeyStatus.REVOKED) {
+      return;
+    }
+    await repoRevokeApiKey(keyId, orgId);
   }
 }
 

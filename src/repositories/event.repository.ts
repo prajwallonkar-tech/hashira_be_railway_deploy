@@ -111,13 +111,15 @@ export async function createEvent(input: CreateEventInput): Promise<Event> {
 
 export interface ListEventsInput {
   org_id: string;
+  user_id?: string;
   page: number;
   page_size: number;
   sort: 'asc' | 'desc';
-  status?: EventStatus;
+  status?: EventStatus[];
   from?: Date;
   to?: Date;
   workflow_id?: string;
+  model_id?: string;
 }
 
 export interface ListEventsResult {
@@ -133,8 +135,12 @@ export async function listEvents(
     .createQueryBuilder('event')
     .where('event.org_id = :org_id', { org_id: input.org_id });
 
-  if (input.status) {
-    qb.andWhere('event.status = :status', { status: input.status });
+  if (input.user_id) {
+    qb.andWhere('event.user_id = :user_id', { user_id: input.user_id });
+  }
+
+  if (input.status && input.status.length > 0) {
+    qb.andWhere('event.status IN (:...statuses)', { statuses: input.status });
   }
   if (input.from) {
     qb.andWhere('event.created_at >= :from', { from: input.from });
@@ -146,6 +152,9 @@ export async function listEvents(
     qb.andWhere('event.workflow_id = :workflow_id', {
       workflow_id: input.workflow_id,
     });
+  }
+  if (input.model_id) {
+    qb.andWhere('event.model_id = :model_id', { model_id: input.model_id });
   }
 
   qb.orderBy('event.created_at', input.sort === 'asc' ? 'ASC' : 'DESC')

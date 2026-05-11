@@ -1,7 +1,12 @@
 import { AppDataSource } from '../config/database';
 import { Organisation } from '../entities/organisation.entity';
 import { User } from '../entities/user.entity';
-import { OrgStatus, UserRole, UserStatus } from '../types/enums';
+import {
+  OrgStatus,
+  SubscriptionStatus,
+  UserRole,
+  UserStatus,
+} from '../types/enums';
 
 export async function findOrgById(orgId: string): Promise<Organisation | null> {
   return AppDataSource.getRepository(Organisation).findOne({
@@ -25,6 +30,16 @@ export interface CreateOrgWithAdminInput {
 export interface CreateOrgWithAdminResult {
   org: Organisation;
   user: User;
+}
+
+export async function activateOrgById(orgId: string): Promise<void> {
+  await AppDataSource.getRepository(Organisation).update(
+    { org_id: orgId, status: OrgStatus.PAYMENT_PENDING },
+    {
+      status: OrgStatus.ACTIVE,
+      subscription_status: SubscriptionStatus.ACTIVE,
+    },
+  );
 }
 
 export async function createOrgWithAdmin(

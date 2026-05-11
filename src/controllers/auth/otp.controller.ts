@@ -4,7 +4,6 @@ import { OtpVerifyBody, OtpResendBody } from '../../validators/otp.validator';
 
 const SESSION_MAX_AGE_MS = 86400 * 1000;
 const REFRESH_MAX_AGE_MS = 604800 * 1000;
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 export function verifyOtp(
   req: Request,
@@ -27,14 +26,14 @@ export function verifyOtp(
 
       res.cookie('hashira_session', result.sessionToken, {
         httpOnly: true,
-        secure: IS_PRODUCTION,
-        sameSite: 'strict',
+        secure: true,
+        sameSite: 'none',
         maxAge: SESSION_MAX_AGE_MS,
       });
       res.cookie('hashira_refresh', result.refreshToken, {
         httpOnly: true,
-        secure: IS_PRODUCTION,
-        sameSite: 'strict',
+        secure: true,
+        sameSite: 'none',
         maxAge: REFRESH_MAX_AGE_MS,
       });
       res.status(200).json({
