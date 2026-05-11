@@ -2,5 +2,5 @@
 buildCommand = "npm run build"
 
 [deploy]
-releaseCommand = "npm run seed:demo"
+releaseCommand = "npm run migration:run && npm run seed:demo"
 startCommand = "npm run start"
